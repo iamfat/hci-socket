@@ -1,0 +1,17 @@
+{
+  "name": "@genee/hci-socket",
+  "version": "1.0.0",
+  "main": "index.js",
+  "types": "./index.d.ts",
+  "author": "Jia Huang (iamfat@gmail.com)",
+  "license": "MIT",
+  "dependencies": {
+    "@genee/struct": "^1.0.1",
+    "bindings": "^1.5.0",
+    "node-addon-api": "^5.0.0"
+  },
+  "gypfile": true,
+  "os": [
+    "linux"
+  ]
+}
