@@ -6,7 +6,6 @@
   "author": "Jia Huang (iamfat@gmail.com)",
   "license": "MIT",
   "dependencies": {
-    "@genee/struct": "^1.0.1",
     "bindings": "^1.5.0",
     "node-addon-api": "^5.0.0"
   },
