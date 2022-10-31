@@ -243,20 +243,17 @@ Napi::Value Socket::Info(const Napi::CallbackInfo &info)
 {
     auto env = info.Env();
 
-    Napi::Value ret;
-
     struct hci_dev_info di;
     memset(&di, 0, sizeof(struct hci_dev_info));
     di.dev_id = this->devId;
-    if (ioctl(this->sock, HCIGETDEVINFO, (void *)&di) != -1) {
-        auto obj = Napi::Object::New(env);
-        StoreDevInfo(obj, di);
-        ret = obj;
-    } else {
-        ret = Napi::Number::New(env, -errno);
+    if (ioctl(this->sock, HCIGETDEVINFO, (void *)&di) == -1) {
+        Napi::Error::New(env, "Socket info is not fetched").ThrowAsJavaScriptException();
+        return env.Undefined();
     }
 
-    return ret;
+    auto obj = Napi::Object::New(env);
+    StoreDevInfo(obj, di);
+    return obj;
 }
 
 Napi::Value Socket::Send(const Napi::CallbackInfo &info)
@@ -306,18 +303,17 @@ void Socket::Close(const Napi::CallbackInfo &info) { Destroy(); }
 void Socket::SetOpt(const Napi::CallbackInfo &info)
 {
     auto env = info.Env();
-    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsArrayBuffer()) {
-        Napi::Error::New(env, "setopt with invalid arguments")
-            .ThrowAsJavaScriptException();
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() ||
+        !info[2].IsArrayBuffer()) {
+        Napi::Error::New(env, "setopt with invalid arguments").ThrowAsJavaScriptException();
         return;
     }
 
-    auto level = info[0].As<Napi::Number>();
+    auto level  = info[0].As<Napi::Number>();
     auto option = info[1].As<Napi::Number>();
     auto buffer = info[2].As<Napi::ArrayBuffer>();
     if (setsockopt(this->sock, level, option, buffer.Data(), buffer.ByteLength()) < 0) {
-        Napi::Error::New(env, "setopt failed")
-            .ThrowAsJavaScriptException();
+        Napi::Error::New(env, "setopt failed").ThrowAsJavaScriptException();
     }
 }
 
