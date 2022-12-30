@@ -12,6 +12,8 @@ declare class Socket extends EventEmitter {
     close(): void;
     send(data: ArrayBuffer): number;
     setopt(level: number, opt: number, value: ArrayBuffer): void;
+    up(): void;
+    down(): void;
     info(): DeviceInfo;
 }
 export = Socket;

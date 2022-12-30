@@ -89,6 +89,8 @@ class Socket : public Napi::ObjectWrap<Socket>
     void        Bind(const Napi::CallbackInfo &info);
     void        Close(const Napi::CallbackInfo &info);
     void        SetOpt(const Napi::CallbackInfo &info);
+    void        Up(const Napi::CallbackInfo &info);
+    void        Down(const Napi::CallbackInfo &info);
     void        Destroy();
 
     static void OnUVPoll(uv_poll_t *handle, int status, int events);
@@ -317,6 +319,22 @@ void Socket::SetOpt(const Napi::CallbackInfo &info)
     }
 }
 
+void Socket::Up(const Napi::CallbackInfo &info)
+{
+    auto env = info.Env();
+    if (ioctl(this->sock, HCIDEVUP, this->devId) < 0) {
+        Napi::Error::New(env, "can't bring the device up").ThrowAsJavaScriptException();
+    }
+}
+
+void Socket::Down(const Napi::CallbackInfo &info)
+{
+    auto env = info.Env();
+    if (ioctl(this->sock, HCIDEVDOWN, this->devId) < 0) {
+        Napi::Error::New(env, "can't bring the device down").ThrowAsJavaScriptException();
+    }
+}
+
 Napi::Object Socket::Init(Napi::Env env, Napi::Object exports)
 {
     auto func = DefineClass(env, "Socket",
@@ -326,6 +344,8 @@ Napi::Object Socket::Init(Napi::Env env, Napi::Object exports)
                                 InstanceMethod<&Socket::Send>("send"),
                                 InstanceMethod<&Socket::Close>("close"),
                                 InstanceMethod<&Socket::SetOpt>("setopt"),
+                                InstanceMethod<&Socket::Up>("up"),
+                                InstanceMethod<&Socket::Down>("down"),
                             });
 
     exports.Set("Socket", func);
