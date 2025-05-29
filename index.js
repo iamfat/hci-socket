@@ -1,12 +1,16 @@
-const Socket = require('bindings')('socket').Socket;
-const { EventEmitter } = require('events');
+if (process.platform == 'linux') {
+    const Socket = require('bindings')('socket').Socket;
+    const { EventEmitter } = require('events');
 
-function inherits(target, source) {
-    for (var k in source.prototype) {
-      target.prototype[k] = source.prototype[k];
+    function inherits(target, source) {
+        for (var k in source.prototype) {
+            target.prototype[k] = source.prototype[k];
+        }
     }
-  }
-  
-inherits(Socket, EventEmitter);
 
-module.exports = Socket;
+    inherits(Socket, EventEmitter);
+
+    module.exports = Socket;
+} else {
+    module.exports = require('./socket.js');
+}
