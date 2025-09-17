@@ -11,6 +11,7 @@
   },
   "gypfile": true,
   "os": [
-    "linux"
+    "linux",
+    "darwin"
   ]
 }

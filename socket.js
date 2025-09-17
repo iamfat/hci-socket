@@ -103,6 +103,13 @@ class MockBLESocket extends EventEmitter {
                     0x05, // 继电器计数器值为5
                 ]), // 厂商数据
                 serviceUUIDs: [USER_SERVICE_UUID], // 服务UUID列表
+                gattServices: {
+                    [USER_SERVICE_UUID]: {
+                        [USER_CHAR_RELAY_UUID]: new Uint8Array([0x01]).buffer,
+                        [USER_CHAR_THRESHOLD_UUID]: new Float32Array([10.0]).buffer,
+                        [USER_CHAR_BEEP_UUID]: new Uint8Array([0x00]).buffer,
+                    },
+                },
             },
             {
                 addr: 'AA:BB:CC:DD:EE:FF',
@@ -141,6 +148,9 @@ class MockBLESocket extends EventEmitter {
                     0x05, // 继电器计数器值为5
                 ]),
                 serviceUUIDs: [COMMON_SERVICE_UUID],
+                gattServices: {
+                    [COMMON_SERVICE_UUID]: {},
+                },
             },
         ];
         // 活动连接列表
@@ -160,8 +170,8 @@ class MockBLESocket extends EventEmitter {
     }
 
     /**
-     * 发送 HCI 命令
-     * @param {ArrayBuffer} data - HCI 命令数据
+     * 发送 HCI 命令或 ACL 数据
+     * @param {ArrayBuffer} data - HCI 命令或ACL数据
      */
     send(data) {
         const view = new Uint8Array(data);
@@ -173,6 +183,15 @@ class MockBLESocket extends EventEmitter {
             const params = view.slice(4, 4 + paramLength);
 
             this.handleHCICommand(opCode, params);
+        } else if (packetType === 0x02) { // ACL Data Packet
+            // 结构: 0x02 | handle_lo | handle_hi | dlen_lo | dlen_hi | payload...
+            const handle = view[1] | ((view[2] & 0x0F) << 8);
+            const dlen = view[3] | (view[4] << 8);
+            const cid = view[6] | (view[7] << 8);
+            const attPayload = view.slice(8, 8 + dlen - 4); // 4字节 L2CAP header
+            if (cid === 0x0004) {
+                this.handleATT(handle, attPayload);
+            }
         }
     }
 
@@ -593,6 +612,93 @@ class MockBLESocket extends EventEmitter {
     bind() {}
 
     setopt() {}
+
+    /**
+     * 处理 ATT 命令
+     * @param {number} handle - 连接句柄
+     * @param {Uint8Array} attPayload - ATT 命令负载
+     */
+    handleATT(handle, attPayload) {
+        // 维护 handle <-> deviceId 映射
+        if (!this.handleToDeviceId) this.handleToDeviceId = {};
+        if (!this.handleToDeviceId[handle]) {
+            // 只支持第一个 mockDevice
+            this.handleToDeviceId[handle] = this.mockDevices[0].addr;
+        }
+        const deviceId = this.handleToDeviceId[handle];
+        const device = this.mockDevices.find(d => d.addr === deviceId);
+        if (!device) return;
+        const gatt = device.gattServices[USER_SERVICE_UUID];
+        const op = attPayload[0];
+        // ATT 响应
+        let resp;
+        if (op === 0x10) { // Read By Group Type Request (服务发现)
+            // 只返回 USER_SERVICE_UUID
+            resp = new Uint8Array([
+                0x11, // Read By Group Type Response
+                0x14, // 每组长度 20字节 (handle+handle+128bit uuid)
+                0x01, 0x00, // start handle
+                0x05, 0x00, // end handle
+                ...Array.from(Buffer.from(USER_SERVICE_UUID.replace(/-/g, ''), 'hex')).reverse(),
+            ]);
+        } else if (op === 0x08) { // Read By Type Request (特征发现)
+            // 返回 44A1/44A3/44A7 三个特征
+            resp = new Uint8Array([
+                0x09, // Read By Type Response
+                0x07, // 每组长度 7字节 (handle+props+valueHandle+uuid)
+                // 44A1
+                0x02, 0x00, // char handle
+                0x02, // props: read|write
+                0x03, 0x00, // value handle
+                0xA1, 0x44, // uuid
+                // 44A3
+                0x04, 0x00,
+                0x02,
+                0x05, 0x00,
+                0xA3, 0x44,
+                // 44A7
+                0x06, 0x00,
+                0x02,
+                0x07, 0x00,
+                0xA7, 0x44,
+            ]);
+        } else if (op === 0x0A) { // Read Request
+            // 只支持 44A1/44A3/44A7
+            const valueHandle = attPayload[1] | (attPayload[2] << 8);
+            let value;
+            if (valueHandle === 0x03) value = new Uint8Array(gatt[USER_CHAR_RELAY_UUID]);
+            else if (valueHandle === 0x05) value = new Uint8Array(gatt[USER_CHAR_THRESHOLD_UUID]);
+            else if (valueHandle === 0x07) value = new Uint8Array(gatt[USER_CHAR_BEEP_UUID]);
+            else value = new Uint8Array([]);
+            resp = new Uint8Array([0x0b, ...value]); // Read Response
+        } else if (op === 0x12) { // Write Request
+            // 只支持 44A1/44A3/44A7
+            const valueHandle = attPayload[1] | (attPayload[2] << 8);
+            const value = attPayload.slice(3);
+            if (valueHandle === 0x03) gatt[USER_CHAR_RELAY_UUID] = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+            else if (valueHandle === 0x05) gatt[USER_CHAR_THRESHOLD_UUID] = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+            else if (valueHandle === 0x07) gatt[USER_CHAR_BEEP_UUID] = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+            resp = new Uint8Array([0x13]); // Write Response
+        } else {
+            // 不支持的操作，返回错误
+            resp = new Uint8Array([0x01, attPayload[1] || 0x00, attPayload[2] || 0x00, 0x06]); // ATT Error: Request Not Supported
+        }
+        // 组装 HCI ACL Data 包
+        const l2capLen = resp.length + 4;
+        const aclLen = l2capLen;
+        const out = new Uint8Array(5 + aclLen);
+        out[0] = 0x02; // ACL Packet
+        out[1] = handle & 0xff;
+        out[2] = (handle >> 8) & 0x0f;
+        out[3] = aclLen & 0xff;
+        out[4] = (aclLen >> 8) & 0xff;
+        out[5] = resp.length + 4 & 0xff; // L2CAP length
+        out[6] = (resp.length + 4) >> 8;
+        out[7] = 0x04; // CID = 0x0004 (ATT)
+        out[8] = 0x00;
+        out.set(resp, 9);
+        this.emit('data', out.buffer);
+    }
 }
 
 module.exports = MockBLESocket;
