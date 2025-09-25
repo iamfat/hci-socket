@@ -104,6 +104,11 @@ Socket::Socket(const Napi::CallbackInfo &info) : Napi::ObjectWrap<Socket>(info)
 {
     auto env = info.Env();
 
+    // 初始化所有成员变量，确保在异常情况下也能正确清理
+    this->uvPoll = nullptr;
+    this->sock   = -1;
+    this->devId  = 0;
+
     int sock = socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI);
     if (sock < 0) {
         Napi::Error::New(env, "Unable to create HCI socket").ThrowAsJavaScriptException();
@@ -113,13 +118,13 @@ Socket::Socket(const Napi::CallbackInfo &info) : Napi::ObjectWrap<Socket>(info)
     int devId = 0;
     if (info.Length() > 0) {
         if (!info[0].IsNumber()) {
-            Napi::Error::New(env, "arg0 must be numbe!r").ThrowAsJavaScriptException();
+            close(sock); // 清理已创建的 socket
+            Napi::Error::New(env, "arg0 must be number").ThrowAsJavaScriptException();
             return;
         }
         devId = info[0].As<Napi::Number>();
     }
 
-    this->uvPoll = nullptr;
     this->sock   = sock;
     this->devId  = devId;
 }
@@ -128,6 +133,7 @@ Socket::~Socket() { Destroy(); }
 
 void Socket::Destroy()
 {
+    // 清理 uv_poll
     if (this->uvPoll) {
         uv_poll_stop(this->uvPoll);
         uv_close((uv_handle_t *)this->uvPoll, (uv_close_cb)free);
@@ -135,6 +141,7 @@ void Socket::Destroy()
         this->Unref();
     }
 
+    // 清理 socket
     if (this->sock != -1) {
         close(this->sock);
         this->sock = -1;
@@ -144,6 +151,11 @@ void Socket::Destroy()
 void Socket::OnUVPoll(uv_poll_t *handle, int status, int events)
 {
     Socket *me = (Socket *)handle->data;
+    
+    // 检查对象是否仍然有效
+    if (!me || me->sock == -1) {
+        return;
+    }
 
     auto              env = me->Env();
     Napi::HandleScope scope(env);
@@ -158,10 +170,15 @@ void Socket::OnUVPoll(uv_poll_t *handle, int status, int events)
     if (nbytes <= 0) {
         me->Destroy();
     } else {
-        auto buf  = Napi::Buffer<uint8_t>::Copy(env, packet, nbytes);
-        auto This = me->Value();
-        This.Get("emit").As<Napi::Function>().Call(
-            This, {Napi::String::From(env, "data"), buf.Get("buffer")});
+        try {
+            auto buf  = Napi::Buffer<uint8_t>::Copy(env, packet, nbytes);
+            auto This = me->Value();
+            This.Get("emit").As<Napi::Function>().Call(
+                This, {Napi::String::From(env, "data"), buf.Get("buffer")});
+        } catch (...) {
+            // 如果 JavaScript 调用失败，记录错误但不崩溃
+            fprintf(stderr, "Error in OnUVPoll JavaScript callback\n");
+        }
     }
     if (env.IsExceptionPending()) {
         napi_fatal_exception(env, env.GetAndClearPendingException().Value());
@@ -199,8 +216,16 @@ void Socket::Bind(const Napi::CallbackInfo &info)
     napi_get_uv_event_loop(env, &loop);
 
     this->uvPoll = (uv_poll_t *)malloc(sizeof(uv_poll_t));
-    int res      = uv_poll_init(loop, this->uvPoll, this->sock);
+    if (!this->uvPoll) {
+        Napi::Error::New(env, "Unable to allocate memory for uv_poll")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+
+    int res = uv_poll_init(loop, this->uvPoll, this->sock);
     if (res != 0) {
+        free(this->uvPoll); // 清理分配的内存
+        this->uvPoll = nullptr;
         Napi::Error::New(env, "Unable to enroll HCI socket to uv_poll")
             .ThrowAsJavaScriptException();
         return;
@@ -295,6 +320,10 @@ Napi::Value Socket::Send(const Napi::CallbackInfo &info)
     ssize_t ret = write(this->sock, buffer.Data(), buffer.ByteLength());
     if (ret == -1) {
         ret = -errno;
+        // 如果写入失败且是严重错误，可能需要关闭 socket
+        if (errno == EPIPE || errno == ECONNRESET) {
+            this->Destroy();
+        }
     }
 
     return Napi::Number::New(env, ret);
